@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="color-scheme" content="light only">
-    <title>Kitty Toy for Cats</title>
+    <title>Feline Prey Stimulator v22 - Final Rasterized Geometry</title>
     <style>
         :root { color-scheme: light only; }
         body, html {
@@ -146,9 +146,9 @@
         let vx = 0; let vy = 0;
         
         // v21 Micro-Adjusted Kinematics
-        let currentSpeed = 12;
-        let targetSpeed = 12; 
-        const burstSpeed = 45; 
+        let currentSpeed = 10;
+        let targetSpeed = 10; 
+        const burstSpeed = 40; 
         const size = 96; 
         
         let frictionLoop; 
@@ -315,7 +315,7 @@
             if (frictionLoop) clearInterval(frictionLoop);
 
             currentSpeed = burstSpeed; 
-            targetSpeed = 8 + Math.random() * 4; 
+            targetSpeed = 10 + Math.random() * 4; 
             
             const angle = Math.random() * Math.PI * 2;
             vx = Math.cos(angle) * currentSpeed;
