@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="color-scheme" content="light only">
+    <title>Kevin's Kitty Toy v22</title>
+    <style>
+        :root { color-scheme: light only; }
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            background: transparent !important;
+            overflow: hidden;
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        
+        #bg-canvas {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 1;
+            pointer-events: none; 
+        }
+
+        #hitbox {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 50; 
+            cursor: crosshair;
+            display: none; 
+        }
+        
+        /* v17 precise scaling */
+        #prey {
+            width: 96px; height: 96px;
+            position: absolute;
+            top: 0; left: 0;
+            will-change: transform;
+            z-index: 10;
+            display: none;
+            transform-origin: 50% 50%; 
+        }
+        
+        #prey-canvas {
+            width: 100%; height: 100%; display: block;
+        }
+
+        #init-overlay {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            background-color: transparent !important;
+            z-index: 100; cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="bg-canvas"></canvas>
+
+    <div id="init-overlay"></div>
+    <div id="hitbox"></div>
+    <div id="prey">
+        <!-- SVG/IMG purged entirely. Replaced with immutable pixel canvas to blind the Samsung engine -->
+        <canvas id="prey-canvas" width="100" height="100"></canvas>
+    </div>
+
+    <script>
+        let isRunning = false;
+
+        // --- BACKGROUND RASTER SHIELD ---
+        const bgCanvas = document.getElementById('bg-canvas');
+        const bgCtx = bgCanvas.getContext('2d', { alpha: false }); 
+
+        function lockWhiteBackground() {
+            bgCanvas.width = window.innerWidth;
+            bgCanvas.height = window.innerHeight;
+            
+            bgCtx.fillStyle = '#FFFFFF';
+            bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
+
+            if (!isRunning) {
+                bgCtx.fillStyle = '#000000'; 
+                bgCtx.font = 'bold 24px monospace';
+                bgCtx.textAlign = 'center';
+                bgCtx.textBaseline = 'middle';
+                bgCtx.fillText('tap the screen to begin', bgCanvas.width / 2, bgCanvas.height / 2);
+            }
+        }
+        
+        window.addEventListener('resize', lockWhiteBackground);
+        lockWhiteBackground(); 
+
+        // --- PREY RASTER SHIELD ---
+        // Mathematically paints the exact v17 shape onto the canvas pixel-by-pixel 
+        const preyCanvas = document.getElementById('prey-canvas');
+        const pCtx = preyCanvas.getContext('2d');
+        
+        pCtx.fillStyle = '#000000';
+        pCtx.strokeStyle = '#000000';
+        
+        // 1. Tail (v17: 5px)
+        pCtx.lineWidth = 5;
+        pCtx.lineCap = 'round';
+        pCtx.beginPath();
+        pCtx.moveTo(25, 50);
+        pCtx.quadraticCurveTo(5, 50, 5, 70);
+        pCtx.stroke();
+        
+        // 2. Body (v17: rx 28, ry 16)
+        pCtx.beginPath();
+        pCtx.ellipse(50, 50, 28, 16, 0, 0, 2 * Math.PI);
+        pCtx.fill();
+        
+        // 3. Snout (v17 coordinates)
+        pCtx.beginPath();
+        pCtx.moveTo(65, 34);
+        pCtx.lineTo(95, 50);
+        pCtx.lineTo(65, 66);
+        pCtx.fill();
+        
+        // 4. Ears (v17: r 6)
+        pCtx.beginPath();
+        pCtx.arc(65, 34, 6, 0, 2 * Math.PI);
+        pCtx.fill();
+        pCtx.beginPath();
+        pCtx.arc(65, 66, 6, 0, 2 * Math.PI);
+        pCtx.fill();
+
+
+        // --- CORE KINEMATIC ENGINE ---
+        const prey = document.getElementById('prey');
+        const overlay = document.getElementById('init-overlay');
+        const hitbox = document.getElementById('hitbox');
+        
+        let audioCtx;
+        let windFilter;
+        
+        let x = window.innerWidth / 2;
+        let y = window.innerHeight / 2;
+        let vx = 0; let vy = 0;
+        
+        // v21 Micro-Adjusted Kinematics
+        let currentSpeed = 12;
+        let targetSpeed = 12; 
+        const burstSpeed = 45; 
+        const size = 96; 
+        
+        let frictionLoop; 
+        let engineTime = 0;
+        
+        let secretSequence = [];
+        let lastTapTime = 0;
+
+        function initAudio() {
+            try {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                if (AudioContext) audioCtx = new AudioContext();
+                startAmbientEnvironment();
+            } catch (e) {}
+        }
+
+        function startAmbientEnvironment() {
+            if (!audioCtx) return;
+            const bufferSize = Math.floor(audioCtx.sampleRate * 2); 
+            const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+            const output = noiseBuffer.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) output[i] = Math.random() * 2 - 1; 
+
+            const noiseSrc = audioCtx.createBufferSource();
+            noiseSrc.buffer = noiseBuffer;
+            noiseSrc.loop = true;
+
+            windFilter = audioCtx.createBiquadFilter();
+            windFilter.type = 'lowpass';
+            windFilter.frequency.value = 400; 
+
+            const windGain = audioCtx.createGain();
+            windGain.gain.value = 0.05; 
+
+            noiseSrc.connect(windFilter);
+            windFilter.connect(windGain);
+            windGain.connect(audioCtx.destination);
+            noiseSrc.start();
+        }
+
+        function playBirdChirp() {
+            if (!audioCtx || audioCtx.state !== 'running') return;
+            try {
+                const now = audioCtx.currentTime;
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                
+                osc.connect(gain); gain.connect(audioCtx.destination);
+                osc.type = 'sine';
+                
+                osc.frequency.setValueAtTime(3500, now);
+                osc.frequency.exponentialRampToValueAtTime(6000, now + 0.1);
+                osc.frequency.exponentialRampToValueAtTime(4500, now + 0.2);
+
+                gain.gain.setValueAtTime(0, now);
+                gain.gain.linearRampToValueAtTime(0.1, now + 0.05); 
+                gain.gain.linearRampToValueAtTime(0, now + 0.2);   
+
+                osc.start(now); osc.stop(now + 0.25);
+            } catch (e) {}
+        }
+
+        function playHighChirp() {
+            if (!audioCtx || audioCtx.state !== 'running') return;
+            try {
+                const now = audioCtx.currentTime;
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                
+                osc.connect(gain); gain.connect(audioCtx.destination);
+                osc.type = 'sine';
+                
+                osc.frequency.setValueAtTime(7000, now);
+                osc.frequency.exponentialRampToValueAtTime(5000, now + 0.05);
+                
+                osc.frequency.setValueAtTime(7500, now + 0.08);
+                osc.frequency.exponentialRampToValueAtTime(5500, now + 0.13);
+
+                gain.gain.setValueAtTime(0.01, now);
+                gain.gain.linearRampToValueAtTime(0.1, now + 0.02); 
+                gain.gain.exponentialRampToValueAtTime(0.01, now + 0.05); 
+                
+                gain.gain.setValueAtTime(0.01, now + 0.08);
+                gain.gain.linearRampToValueAtTime(0.1, now + 0.10); 
+                gain.gain.exponentialRampToValueAtTime(0.01, now + 0.13);
+
+                osc.start(now); osc.stop(now + 0.15);
+            } catch (e) {}
+        }
+
+        function playChitter(intensity) {
+            if (!audioCtx || audioCtx.state !== 'running') return;
+            try {
+                const now = audioCtx.currentTime;
+                const clicks = intensity === 'high' ? 8 : 3;
+                const peakVolume = intensity === 'high' ? 0.8 : 0.15;
+
+                for (let i = 0; i < clicks; i++) {
+                    const osc = audioCtx.createOscillator();
+                    const gain = audioCtx.createGain();
+                    
+                    osc.connect(gain); gain.connect(audioCtx.destination);
+                    osc.type = 'square';
+                    osc.frequency.value = 5000 + (Math.random() * 3000); 
+
+                    const startTime = now + (i * 0.035); 
+                    
+                    gain.gain.setValueAtTime(0.01, startTime);
+                    gain.gain.linearRampToValueAtTime(peakVolume, startTime + 0.005);
+                    gain.gain.exponentialRampToValueAtTime(0.01, startTime + 0.025);
+
+                    osc.start(startTime); osc.stop(startTime + 0.03);
+                }
+            } catch (e) {}
+        }
+
+        function playGlimmer() {
+            if (!audioCtx || audioCtx.state !== 'running') return;
+            try {
+                const now = audioCtx.currentTime;
+                const freqs = [6000, 7500, 9000, 11000];
+                
+                freqs.forEach((freq, i) => {
+                    const osc = audioCtx.createOscillator();
+                    const gain = audioCtx.createGain();
+                    
+                    osc.connect(gain); gain.connect(audioCtx.destination);
+                    osc.type = 'sine';
+                    osc.frequency.value = freq;
+                    
+                    const startTime = now + (i * 0.03); 
+                    
+                    gain.gain.setValueAtTime(0, startTime);
+                    gain.gain.linearRampToValueAtTime(0.15, startTime + 0.01); 
+                    gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.15); 
+                    
+                    osc.start(startTime); osc.stop(startTime + 0.2);
+                });
+            } catch (e) {}
+        }
+
+        function playNailClick(intensity) {
+            if (!audioCtx || audioCtx.state !== 'running') return;
+            try {
+                const now = audioCtx.currentTime;
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+
+                osc.connect(gain); gain.connect(audioCtx.destination);
+                osc.type = 'triangle'; 
+                osc.frequency.value = 3000 + (Math.random() * 5000);
+
+                const volume = intensity === 'high' ? 0.06 : 0.015;
+
+                gain.gain.setValueAtTime(0.001, now);
+                gain.gain.linearRampToValueAtTime(volume, now + 0.001); 
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.015); 
+
+                osc.start(now); osc.stop(now + 0.02);
+            } catch (e) {}
+        }
+
+        function dart() {
+            if (frictionLoop) clearInterval(frictionLoop);
+
+            currentSpeed = burstSpeed; 
+            targetSpeed = 12 + Math.random() * 5; 
+            
+            const angle = Math.random() * Math.PI * 2;
+            vx = Math.cos(angle) * currentSpeed;
+            vy = Math.sin(angle) * currentSpeed;
+            
+            playChitter('high');
+            playGlimmer();
+
+            frictionLoop = setInterval(() => {
+                currentSpeed *= 0.85;
+                if (currentSpeed <= targetSpeed) {
+                    currentSpeed = targetSpeed;
+                    clearInterval(frictionLoop);
+                    frictionLoop = null;
+                }
+                const currentAngle = Math.atan2(vy, vx);
+                vx = Math.cos(currentAngle) * currentSpeed;
+                vy = Math.sin(currentAngle) * currentSpeed;
+            }, 30);
+        }
+
+        function updateLoop() {
+            if (!isRunning) return;
+            engineTime += 0.016; 
+
+            if (windFilter) {
+                windFilter.frequency.value = 400 + Math.sin(engineTime * 0.5) * 200;
+            }
+
+            if (Math.random() < 0.005) playBirdChirp();
+            if (Math.random() < 0.01) playHighChirp();
+
+            if (Math.random() < 0.03 && !frictionLoop) {
+                targetSpeed = 12 + Math.random() * 5; 
+                
+                const angle = Math.random() * Math.PI * 2;
+                vx = Math.cos(angle) * currentSpeed;
+                vy = Math.sin(angle) * currentSpeed;
+                if (Math.random() < 0.2) playChitter('low');
+            }
+
+            if (!frictionLoop && Math.abs(currentSpeed - targetSpeed) > 0.1) {
+                currentSpeed += (targetSpeed - currentSpeed) * 0.1;
+                const currentAngle = Math.atan2(vy, vx);
+                vx = Math.cos(currentAngle) * currentSpeed;
+                vy = Math.sin(currentAngle) * currentSpeed;
+            }
+
+            if (currentSpeed > 30) {
+                if (Math.random() < 0.8) playNailClick('high');
+            } else {
+                if (Math.random() < 0.3) playNailClick('low');
+            }
+
+            x += vx; y += vy;
+
+            if (x <= 0 || x >= window.innerWidth - size) {
+                vx *= -1; x = Math.max(0, Math.min(x, window.innerWidth - size));
+            }
+            if (y <= 0 || y >= window.innerHeight - size) {
+                vy *= -1; y = Math.max(0, Math.min(y, window.innerHeight - size));
+            }
+
+            const angleDeg = Math.atan2(vy, vx) * (180 / Math.PI);
+            prey.style.transform = `translate(${x}px, ${y}px) rotate(${angleDeg}deg)`;
+            
+            requestAnimationFrame(updateLoop);
+        }
+
+        function handleStrike(e) {
+            e.preventDefault(); 
+            if (!isRunning) return;
+            
+            const now = Date.now();
+            if (now - lastTapTime < 100) return; 
+            lastTapTime = now;
+            
+            let clientX, clientY;
+            if (e.touches && e.touches.length > 0) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+            
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+            let cornerTap = null;
+            
+            if (clientY < h * 0.3) {
+                if (clientX > w * 0.7) cornerTap = 'TR';
+                else if (clientX < w * 0.3) cornerTap = 'TL';
+            }
+            
+            if (cornerTap) {
+                secretSequence.push(cornerTap);
+                if (secretSequence.length > 4) secretSequence.shift();
+                
+                const seqStr = secretSequence.join(',');
+                if (seqStr === 'TR,TL,TR,TR') {
+                    try {
+                        if (document.exitFullscreen) document.exitFullscreen();
+                        else if (document.mozCancelFullScreen) document.mozCancelFullScreen(); 
+                        else if (document.webkitExitFullscreen) document.webkitExitFullscreen(); 
+                        else if (document.msExitFullscreen) document.msExitFullscreen(); 
+                    } catch (err) {}
+                    
+                    secretSequence = []; 
+                    return; 
+                }
+            } else {
+                secretSequence = [];
+            }
+
+            dart();
+        }
+
+        hitbox.addEventListener('mousedown', handleStrike);
+        hitbox.addEventListener('touchstart', handleStrike, {passive: false});
+
+        overlay.addEventListener('click', async () => {
+            try {
+                const doc = document.documentElement;
+                const req = doc.requestFullscreen || doc.webkitRequestFullscreen || doc.mozRequestFullScreen || doc.msRequestFullscreen;
+                if (req) {
+                    const promise = req.call(doc);
+                    if (promise && typeof promise.catch === 'function') promise.catch(() => {}); 
+                }
+            } catch (e) {}
+
+            initAudio();
+            if (audioCtx && audioCtx.state === 'suspended') {
+                try { await audioCtx.resume(); } catch (e) {}
+            }
+            
+            overlay.style.display = 'none';
+            prey.style.display = 'block';
+            hitbox.style.display = 'block'; 
+            isRunning = true;
+            
+            lockWhiteBackground();
+            
+            targetSpeed = 12 + Math.random() * 5; 
+            currentSpeed = targetSpeed;
+            const initAngle = Math.random() * Math.PI * 2;
+            vx = Math.cos(initAngle) * currentSpeed;
+            vy = Math.sin(initAngle) * currentSpeed;
+            
+            updateLoop();
+        }, { once: true });
+    </script>
+</body>
+</html>
